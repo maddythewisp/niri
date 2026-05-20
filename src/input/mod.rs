@@ -19,7 +19,9 @@ use smithay::backend::input::{
 };
 use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::dnd::DnDGrab;
-use smithay::input::keyboard::{keysyms, FilterResult, Keysym, Layout, ModifiersState};
+use smithay::input::keyboard::{
+    keysyms, FilterResult, Keysym, KeysymHandle, Layout, ModifiersState,
+};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
     GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
@@ -52,7 +54,7 @@ use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
-use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
+use crate::utils::{center, get_monotonic_time, with_toplevel_role, CastSessionId, ResizeEdge};
 
 pub mod backend_ext;
 pub mod move_grab;
@@ -73,6 +75,15 @@ pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
     pub aspect_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ClientKeyTranslation {
+    Key {
+        target_keycode: Keycode,
+        translated_mods: ModifiersState,
+    },
+    Consumed,
 }
 
 pub enum PointerOrTouchStartData<D: SeatHandler> {
@@ -562,6 +573,12 @@ impl State {
                             this.niri.suppressed_keys.insert(key_code);
                             return FilterResult::Intercept(Some(bind));
                         }
+                    }
+
+                    if handle_client_key_translation(
+                        this, key_code, raw, pressed, *mods, &keysym, serial, time,
+                    ) {
+                        return FilterResult::Intercept(None);
                     }
 
                     // Interaction with the active window, immediately update the active window's
@@ -4400,6 +4417,468 @@ impl State {
 
         grab.is::<PickWindowGrab>() || grab.is::<PickColorGrab>() || Self::is_dnd_grab(grab)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ClientKeyTarget {
+    Source,
+    Keysym(Keysym),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientKeySpec {
+    target: ClientKeyTarget,
+    mods: ModifiersState,
+}
+
+fn handle_client_key_translation(
+    state: &mut State,
+    source_keycode: Keycode,
+    raw: Option<Keysym>,
+    pressed: bool,
+    mods: ModifiersState,
+    keysym: &KeysymHandle<'_>,
+    serial: smithay::utils::Serial,
+    time: u32,
+) -> bool {
+    if !pressed {
+        let Some(translation) = state.niri.client_key_translations.remove(&source_keycode) else {
+            return false;
+        };
+
+        if let ClientKeyTranslation::Key {
+            target_keycode,
+            translated_mods,
+        } = translation
+        {
+            send_translated_client_key(
+                state,
+                target_keycode,
+                KeyState::Released,
+                translated_mods,
+                serial,
+                time,
+            );
+        }
+        // Always re-sync the client to the resting modifier state, including the
+        // Consumed case (e.g. the command modifier itself). Otherwise the client
+        // is left believing a modifier is still held until the next forwarded
+        // key, which taints pointer clicks in between.
+        restore_client_mods(state);
+        return true;
+    }
+
+    let Some(raw) = raw else {
+        return false;
+    };
+
+    if !state.niri.keyboard_focus.is_layout() {
+        return false;
+    }
+
+    let app_id = focused_client_app_id(state);
+    let text_nav_native = app_id
+        .as_deref()
+        .is_some_and(client_uses_native_text_navigation);
+    let command_native = app_id.as_deref().is_some_and(client_uses_native_command);
+
+    if is_command_modifier(raw) && !command_native {
+        state
+            .niri
+            .client_key_translations
+            .insert(source_keycode, ClientKeyTranslation::Consumed);
+        // Hide the command modifier from the client: keep its view at the
+        // resting (Super-stripped) state.
+        restore_client_mods(state);
+        return true;
+    }
+
+    if !text_nav_native {
+        if let Some(spec) = text_navigation_spec(raw, mods) {
+            return send_client_key_spec(state, source_keycode, spec, keysym, serial, time);
+        }
+
+        if matches!(raw, Keysym::BackSpace) && mods_exact(mods, false, false, false, true) {
+            let Some(end_keycode) = keycode_for_keysym(keysym, Keysym::End) else {
+                return false;
+            };
+            let Some(delete_keycode) = keycode_for_keysym(keysym, Keysym::Delete) else {
+                return false;
+            };
+
+            let mut shift_mods = translated_mods(mods);
+            shift_mods.shift = true;
+            send_translated_client_key(
+                state,
+                end_keycode,
+                KeyState::Pressed,
+                shift_mods,
+                serial,
+                time,
+            );
+            send_translated_client_key(
+                state,
+                end_keycode,
+                KeyState::Released,
+                shift_mods,
+                serial,
+                time,
+            );
+            send_translated_client_key(
+                state,
+                delete_keycode,
+                KeyState::Pressed,
+                translated_mods(mods),
+                serial,
+                time,
+            );
+            send_translated_client_key(
+                state,
+                delete_keycode,
+                KeyState::Released,
+                translated_mods(mods),
+                serial,
+                time,
+            );
+            // This whole combo is self-contained (press+release already sent),
+            // so return the client to its resting modifier state.
+            restore_client_mods(state);
+            state
+                .niri
+                .client_key_translations
+                .insert(source_keycode, ClientKeyTranslation::Consumed);
+            return true;
+        }
+    }
+
+    if command_native {
+        return false;
+    }
+
+    if let Some(spec) = command_as_control_spec(raw, mods) {
+        return send_client_key_spec(state, source_keycode, spec, keysym, serial, time);
+    }
+
+    false
+}
+
+fn send_client_key_spec(
+    state: &mut State,
+    source_keycode: Keycode,
+    spec: ClientKeySpec,
+    keysym: &KeysymHandle<'_>,
+    serial: smithay::utils::Serial,
+    time: u32,
+) -> bool {
+    let target_keycode = match spec.target {
+        ClientKeyTarget::Source => source_keycode,
+        ClientKeyTarget::Keysym(target) => {
+            let Some(keycode) = keycode_for_keysym(keysym, target) else {
+                return false;
+            };
+            keycode
+        }
+    };
+
+    send_translated_client_key(
+        state,
+        target_keycode,
+        KeyState::Pressed,
+        spec.mods,
+        serial,
+        time,
+    );
+    state.niri.client_key_translations.insert(
+        source_keycode,
+        ClientKeyTranslation::Key {
+            target_keycode,
+            translated_mods: spec.mods,
+        },
+    );
+    true
+}
+
+/// Forward a translated key to the focused client with an explicit
+/// client-visible modifier state.
+///
+/// This advertises `client_mods` to the focused client via smithay's decoupled
+/// client modifier state, *without* touching the keyboard's physical (xkb)
+/// modifier state, which niri keeps using for its own keysym and bind handling.
+/// There is no save/restore of the physical state, so the client's modifier view
+/// is exactly what we set here until the next time we change it.
+fn send_translated_client_key(
+    state: &mut State,
+    keycode: Keycode,
+    key_state: KeyState,
+    client_mods: ModifiersState,
+    serial: smithay::utils::Serial,
+    time: u32,
+) {
+    let keyboard = state.niri.seat.get_keyboard().unwrap().clone();
+    keyboard.set_client_modifier_state(state, client_mods);
+    keyboard.input_forward(state, keycode, key_state, serial, time, false);
+}
+
+/// The modifier state the focused client should see "at rest": the physical
+/// modifiers with the command modifier (Super) hidden, since it is translated
+/// away for non-command-native clients. Other modifiers pass through unchanged.
+fn client_visible_mods(mut mods: ModifiersState) -> ModifiersState {
+    mods.logo = false;
+    mods
+}
+
+/// Re-sync the focused client's modifier view to the resting state after
+/// handling a translated or consumed event, so the client never lingers on a
+/// translated or command-key-held modifier state — which would otherwise taint a
+/// following pointer click or keystroke.
+fn restore_client_mods(state: &mut State) {
+    let keyboard = state.niri.seat.get_keyboard().unwrap().clone();
+    let resting = client_visible_mods(keyboard.modifier_state());
+    keyboard.set_client_modifier_state(state, resting);
+}
+
+/// Release any in-flight translated keys to the currently focused client and
+/// reset its modifier view. Must be called before keyboard focus moves: smithay
+/// reports still-forwarded keys and the client modifier state to the newly
+/// focused client on enter, so without this a translated key/modifier held
+/// across a focus change would get stuck on the next client.
+pub(crate) fn flush_client_key_translations(state: &mut State) {
+    if state.niri.client_key_translations.is_empty() {
+        return;
+    }
+
+    let serial = SERIAL_COUNTER.next_serial();
+    let time = get_monotonic_time().as_millis() as u32;
+
+    for translation in std::mem::take(&mut state.niri.client_key_translations).into_values() {
+        if let ClientKeyTranslation::Key {
+            target_keycode,
+            translated_mods,
+        } = translation
+        {
+            send_translated_client_key(
+                state,
+                target_keycode,
+                KeyState::Released,
+                translated_mods,
+                serial,
+                time,
+            );
+        }
+    }
+
+    restore_client_mods(state);
+}
+
+fn keycode_for_keysym(keysym: &KeysymHandle<'_>, target: Keysym) -> Option<Keycode> {
+    let xkb = keysym.xkb().lock().unwrap();
+    let keymap = unsafe { xkb.keymap() };
+    let min = keymap.min_keycode().raw();
+    let max = keymap.max_keycode().raw();
+    for raw in min..=max {
+        let keycode = Keycode::new(raw);
+        for layout in xkb.layouts() {
+            if xkb
+                .raw_syms_for_key_in_layout(keycode, layout)
+                .contains(&target)
+            {
+                return Some(keycode);
+            }
+        }
+    }
+    None
+}
+
+fn focused_client_app_id(state: &State) -> Option<String> {
+    if !state.niri.keyboard_focus.is_layout() {
+        return None;
+    }
+
+    state
+        .niri
+        .layout
+        .focus()
+        .and_then(|mapped| with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone()))
+}
+
+fn client_uses_native_text_navigation(app_id: &str) -> bool {
+    matches!(
+        app_id,
+        "kitty"
+            | "kitty.desktop"
+            | "org.wezfurlong.wezterm"
+            | "org.wezfurlong.wezterm.desktop"
+            | "foot"
+            | "foot.desktop"
+            | "com.mitchellh.ghostty"
+            | "com.mitchellh.ghostty.desktop"
+            | "org.gnome.Terminal"
+            | "org.gnome.Terminal.desktop"
+    )
+}
+
+fn client_uses_native_command(app_id: &str) -> bool {
+    client_uses_native_text_navigation(app_id)
+        || matches!(app_id, "firefox" | "firefox.desktop" | "Navigator")
+}
+
+fn is_command_modifier(raw: Keysym) -> bool {
+    matches!(raw, Keysym::Super_L | Keysym::Super_R)
+}
+
+fn mods_exact(mods: ModifiersState, ctrl: bool, alt: bool, shift: bool, logo: bool) -> bool {
+    mods.ctrl == ctrl
+        && mods.alt == alt
+        && mods.shift == shift
+        && mods.logo == logo
+        && !mods.iso_level3_shift
+        && !mods.iso_level5_shift
+}
+
+fn translated_mods(mut mods: ModifiersState) -> ModifiersState {
+    mods.ctrl = false;
+    mods.alt = false;
+    mods.shift = false;
+    mods.logo = false;
+    mods.iso_level3_shift = false;
+    mods.iso_level5_shift = false;
+    mods
+}
+
+fn with_mods(mods: ModifiersState, ctrl: bool, alt: bool, shift: bool) -> ModifiersState {
+    let mut translated = translated_mods(mods);
+    translated.ctrl = ctrl;
+    translated.alt = alt;
+    translated.shift = shift;
+    translated
+}
+
+fn text_navigation_spec(raw: Keysym, mods: ModifiersState) -> Option<ClientKeySpec> {
+    let (target, translated_mods) = match raw {
+        Keysym::Left if mods_exact(mods, false, false, false, true) => {
+            (Keysym::Home, with_mods(mods, false, false, false))
+        }
+        Keysym::Right if mods_exact(mods, false, false, false, true) => {
+            (Keysym::End, with_mods(mods, false, false, false))
+        }
+        Keysym::Up if mods_exact(mods, false, false, false, true) => {
+            (Keysym::Home, with_mods(mods, true, false, false))
+        }
+        Keysym::Down if mods_exact(mods, false, false, false, true) => {
+            (Keysym::End, with_mods(mods, true, false, false))
+        }
+        Keysym::Left if mods_exact(mods, false, false, true, true) => {
+            (Keysym::Home, with_mods(mods, false, false, true))
+        }
+        Keysym::Right if mods_exact(mods, false, false, true, true) => {
+            (Keysym::End, with_mods(mods, false, false, true))
+        }
+        Keysym::Up if mods_exact(mods, false, false, true, true) => {
+            (Keysym::Home, with_mods(mods, true, false, true))
+        }
+        Keysym::Down if mods_exact(mods, false, false, true, true) => {
+            (Keysym::End, with_mods(mods, true, false, true))
+        }
+        Keysym::Left if mods_exact(mods, false, true, false, false) => {
+            (Keysym::Left, with_mods(mods, true, false, false))
+        }
+        Keysym::Right if mods_exact(mods, false, true, false, false) => {
+            (Keysym::Right, with_mods(mods, true, false, false))
+        }
+        Keysym::BackSpace if mods_exact(mods, false, true, false, false) => {
+            (Keysym::BackSpace, with_mods(mods, true, false, false))
+        }
+        Keysym::Delete if mods_exact(mods, false, true, false, false) => {
+            (Keysym::Delete, with_mods(mods, true, false, false))
+        }
+        Keysym::Left if mods_exact(mods, false, true, true, false) => {
+            (Keysym::Left, with_mods(mods, true, false, true))
+        }
+        Keysym::Right if mods_exact(mods, false, true, true, false) => {
+            (Keysym::Right, with_mods(mods, true, false, true))
+        }
+        _ => return None,
+    };
+
+    Some(ClientKeySpec {
+        target: ClientKeyTarget::Keysym(target),
+        mods: translated_mods,
+    })
+}
+
+fn command_as_control_spec(raw: Keysym, mods: ModifiersState) -> Option<ClientKeySpec> {
+    let translated_mods = match raw {
+        Keysym::z if mods_exact(mods, false, false, true, true) => {
+            return Some(ClientKeySpec {
+                target: ClientKeyTarget::Keysym(Keysym::y),
+                mods: with_mods(mods, true, false, false),
+            });
+        }
+        Keysym::s | Keysym::n | Keysym::w | Keysym::t | Keysym::f | Keysym::g | Keysym::r
+            if mods_exact(mods, false, false, true, true) =>
+        {
+            with_mods(mods, true, false, true)
+        }
+        Keysym::i | Keysym::j | Keysym::c if mods_exact(mods, false, true, false, true) => {
+            with_mods(mods, true, false, true)
+        }
+        Keysym::u if mods_exact(mods, false, true, false, true) => {
+            with_mods(mods, true, false, false)
+        }
+        Keysym::a
+        | Keysym::c
+        | Keysym::v
+        | Keysym::x
+        | Keysym::z
+        | Keysym::y
+        | Keysym::s
+        | Keysym::o
+        | Keysym::n
+        | Keysym::p
+        | Keysym::w
+        | Keysym::t
+        | Keysym::q
+        | Keysym::f
+        | Keysym::g
+        | Keysym::l
+        | Keysym::r
+        | Keysym::equal
+        | Keysym::minus
+        | Keysym::_0
+        | Keysym::_1
+        | Keysym::_2
+        | Keysym::_3
+        | Keysym::_4
+        | Keysym::_5
+        | Keysym::_6
+        | Keysym::_7
+        | Keysym::_8
+        | Keysym::_9
+        | Keysym::d
+        | Keysym::e
+        | Keysym::h
+        | Keysym::i
+        | Keysym::j
+        | Keysym::k
+        | Keysym::m
+        | Keysym::b
+        | Keysym::u
+        | Keysym::comma
+        | Keysym::period
+        | Keysym::slash
+        | Keysym::bracketleft
+        | Keysym::bracketright
+            if mods_exact(mods, false, false, false, true) =>
+        {
+            with_mods(mods, true, false, false)
+        }
+        _ => return None,
+    };
+
+    Some(ClientKeySpec {
+        target: ClientKeyTarget::Source,
+        mods: translated_mods,
+    })
 }
 
 /// Check whether the key should be intercepted and mark intercepted

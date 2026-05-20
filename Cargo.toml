@@ -37,6 +37,15 @@ git = "https://github.com/Smithay/smithay.git"
 rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
 # path = "../smithay/smithay-drm-extras"
 
+# Local smithay fork: adds KeyboardHandle::set_client_modifier_state and
+# decouples the client-advertised modifier state from the xkb state, used by the
+# macOS-style client keybinding translation in src/input/mod.rs. The fork lives
+# on branch `niri-macos-kbd-translation`, based on the rev pinned above. Keep the
+# smithay checkout on that branch or this build will fail to find the new API.
+[patch."https://github.com/Smithay/smithay.git"]
+smithay = { path = "/home/maddy/Developer/smithay" }
+smithay-drm-extras = { path = "/home/maddy/Developer/smithay/smithay-drm-extras" }
+
 [package]
 name = "niri"
 version.workspace = true

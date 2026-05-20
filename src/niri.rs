@@ -134,7 +134,7 @@ use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
 use crate::input::{
     apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_mouse_binds,
-    mods_with_tablet_stylus_binds, mods_with_wheel_binds, TabletData,
+    mods_with_tablet_stylus_binds, mods_with_wheel_binds, ClientKeyTranslation, TabletData,
 };
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
@@ -325,6 +325,8 @@ pub struct Niri {
     pub seat: Seat<State>,
     /// Scancodes of the keys to suppress.
     pub suppressed_keys: HashSet<Keycode>,
+    /// Client-side key translations whose releases must be mirrored.
+    pub client_key_translations: HashMap<Keycode, ClientKeyTranslation>,
     /// Button codes of the mouse buttons to suppress.
     pub suppressed_buttons: HashSet<u32>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
@@ -1260,6 +1262,12 @@ impl State {
                 self.niri.keyboard_focus,
                 focus
             );
+
+            // Flush any in-flight macOS-style key translations to the
+            // still-current client before focus moves. Otherwise a translated key
+            // or its modifiers, held across the focus change, would be reported as
+            // pressed to the newly focused client on enter and get stuck there.
+            crate::input::flush_client_key_translations(self);
 
             // Tell the windows their new focus state for window rule purposes.
             if let KeyboardFocus::Layout {
@@ -2563,6 +2571,7 @@ impl Niri {
             popups: PopupManager::default(),
             popup_grab: None,
             suppressed_keys: HashSet::new(),
+            client_key_translations: HashMap::new(),
             suppressed_buttons: HashSet::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
