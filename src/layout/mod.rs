@@ -4659,6 +4659,10 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         let _span = tracy_client::span!("Layout::store_unmap_snapshot");
 
+        if !self.close_animation_enabled(window) {
+            return;
+        }
+
         let zoom = self.overview_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -4752,6 +4756,10 @@ impl<W: LayoutElement> Layout<W> {
         blocker: TransactionBlocker,
     ) {
         let _span = tracy_client::span!("Layout::start_close_animation_for_window");
+
+        if !self.close_animation_enabled(window) {
+            return;
+        }
 
         let zoom = self.overview_zoom();
 
@@ -4994,6 +5002,12 @@ impl<W: LayoutElement> Layout<W> {
             .flat_map(|(mon, _, ws)| ws.windows().map(move |win| (mon, win)));
 
         moving_window.chain(rest)
+    }
+
+    fn close_animation_enabled(&self, window: &W::Id) -> bool {
+        self.windows()
+            .find(|(_, candidate)| candidate.id() == window)
+            .is_none_or(|(_, candidate)| candidate.rules().close_animation != Some(false))
     }
 
     pub fn has_window(&self, window: &W::Id) -> bool {

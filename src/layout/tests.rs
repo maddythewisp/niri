@@ -3554,6 +3554,39 @@ fn restore_to_floating_persists_across_fullscreen_maximize() {
 }
 
 #[test]
+fn fullscreen_keep_floating_preserves_layout_and_restore_geometry() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                rules: Some(ResolvedWindowRules {
+                    fullscreen_keep_floating: Some(true),
+                    ..ResolvedWindowRules::default()
+                }),
+                ..TestWindowParams::new(1)
+            },
+        },
+        Op::FullscreenWindow(1),
+    ];
+
+    let mut layout = check_ops(ops);
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.scrolling().tiles().next().is_none());
+    let (tile, stored_pos) = ws.floating().tiles_with_offsets().next().unwrap();
+    assert!(tile.window().pending_sizing_mode().is_fullscreen());
+    assert!(ws.render_above_top_layer());
+
+    check_ops_on_layout(&mut layout, [Op::FullscreenWindow(1)]);
+
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.scrolling().tiles().next().is_none());
+    let (tile, restored_pos) = ws.floating().tiles_with_offsets().next().unwrap();
+    assert!(tile.window().pending_sizing_mode().is_normal());
+    assert_eq!(restored_pos, stored_pos);
+}
+
+#[test]
 fn unmaximize_during_fullscreen_does_not_float() {
     let ops = [
         Op::AddOutput(1),

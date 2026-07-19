@@ -75,6 +75,12 @@ pub struct WindowRule {
     pub scroll_factor: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
     pub tiled_state: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub fullscreen_keep_floating: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub fullscreen_backdrop: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub close_animation: Option<bool>,
     #[knuffel(child, default)]
     pub background_effect: BackgroundEffectRule,
     #[knuffel(child, default)]

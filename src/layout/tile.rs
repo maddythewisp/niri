@@ -1238,7 +1238,7 @@ impl<W: LayoutElement> Tile<W> {
                 });
         }
 
-        if fullscreen_progress > 0. {
+        if fullscreen_progress > 0. && rules.fullscreen_backdrop != Some(false) {
             let alpha = fullscreen_progress as f32;
 
             // During the un/fullscreen animation, render a border element in order to use the

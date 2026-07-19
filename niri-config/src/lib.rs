@@ -888,6 +888,9 @@ mod tests {
                 open-fullscreen false
                 open-floating false
                 open-focused true
+                fullscreen-keep-floating false
+                fullscreen-backdrop false
+                close-animation false
                 default-window-height { fixed 500; }
                 default-column-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
@@ -1882,6 +1885,15 @@ mod tests {
                     ),
                     scroll_factor: None,
                     tiled_state: None,
+                    fullscreen_keep_floating: Some(
+                        false,
+                    ),
+                    fullscreen_backdrop: Some(
+                        false,
+                    ),
+                    close_animation: Some(
+                        false,
+                    ),
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,

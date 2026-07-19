@@ -120,6 +120,17 @@ pub struct ResolvedWindowRules {
     /// Override whether to set the Tiled xdg-toplevel state on the window.
     pub tiled_state: Option<bool>,
 
+    /// Whether fullscreen requests should keep a floating window in the floating
+    /// layout instead of moving it into the scrolling layout.
+    pub fullscreen_keep_floating: Option<bool>,
+
+    /// Whether to draw niri's opaque black backdrop behind this window while
+    /// it is fullscreen.
+    pub fullscreen_backdrop: Option<bool>,
+
+    /// Whether to animate this window after it closes.
+    pub close_animation: Option<bool>,
+
     /// Background effect configuration.
     pub background_effect: BackgroundEffect,
 
@@ -301,6 +312,15 @@ impl ResolvedWindowRules {
                 }
                 if let Some(x) = rule.tiled_state {
                     resolved.tiled_state = Some(x);
+                }
+                if let Some(x) = rule.fullscreen_keep_floating {
+                    resolved.fullscreen_keep_floating = Some(x);
+                }
+                if let Some(x) = rule.fullscreen_backdrop {
+                    resolved.fullscreen_backdrop = Some(x);
+                }
+                if let Some(x) = rule.close_animation {
+                    resolved.close_animation = Some(x);
                 }
 
                 resolved

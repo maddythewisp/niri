@@ -477,6 +477,61 @@ window-rule {
 }
 ```
 
+#### `fullscreen-keep-floating`
+
+By default, fullscreening a floating window moves it into the scrolling
+layout. Set this rule to `true` to keep the window in the floating layout
+while it temporarily occupies the full output.
+
+```kdl
+window-rule {
+    match app-id=r#"^org\.example\.TransientViewer$"#
+
+    open-floating true
+    fullscreen-keep-floating true
+}
+```
+
+The window retains its floating position and size and returns to them when it
+leaves fullscreen. This is intended for transient shell-owned surfaces that
+must not rearrange the scrolling layout.
+
+#### `fullscreen-backdrop`
+
+By default, niri draws an opaque black backdrop behind fullscreen windows.
+Set this rule to `false` for a translucent fullscreen window that needs to
+show or blur the workspace behind it.
+
+```kdl
+window-rule {
+    match app-id=r#"^org\.example\.TransparentViewer$"#
+
+    fullscreen-backdrop false
+}
+```
+
+This only changes the fullscreen backdrop. The window uses the normal
+fullscreen animation and input behavior. If the client is smaller than the
+output, content behind it will be visible instead of black.
+
+#### `close-animation`
+
+By default, niri keeps a snapshot of a window after it closes and animates
+that snapshot out. Set this rule to `false` for an internal or transient
+window that should disappear immediately when its client surface is
+destroyed.
+
+```kdl
+window-rule {
+    match app-id=r#"^org\.example\.TransientViewer$"#
+
+    close-animation false
+}
+```
+
+This does not change the window's fullscreen, resize, or move animations; it
+only suppresses the final close animation after the window is gone.
+
 #### `open-floating`
 
 <sup>Since: 25.01</sup>

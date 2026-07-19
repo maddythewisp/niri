@@ -36,8 +36,11 @@ You can also force a window to go fullscreen via `fullscreen-window` (bound to <
 Fullscreen windows cover the entire screen.
 Similarly to maximize-to-edges, windows are aware of their fullscreen status, and can respond by hiding their titlebars or other parts of the UI.
 
-Niri renders a solid black backdrop behind fullscreen windows.
+Niri renders a solid black backdrop behind fullscreen windows by default.
 This backdrop helps match the screen size when the window itself remains too small (e.g. if you try to fullscreen a fixed-size dialog window), which is the behavior [defined by the Wayland protocol](https://wayland.app/protocols/xdg-shell#xdg_toplevel:request:set_fullscreen).
+Translucent clients that intentionally expose the workspace behind them can
+disable this backdrop with the [`fullscreen-backdrop false`](./Configuration:-Window-Rules.md#fullscreen-backdrop)
+window rule.
 
 When a fullscreen window is focused and not animating, it will cover floating windows and the top layer-shell layer.
 If you want for example your layer-shell notifications or launcher to appear over fullscreen windows, configure the respective tools to put them on the overlay layer-shell layer.
@@ -48,9 +51,16 @@ You can make a window open fullscreen, or prevent a window from fullscreening up
 
 ## Common behaviors across fullscreen and maximize
 
-Fullscreen or maximized-to-edges windows can only be in the scrolling layout.
-So if you try to fullscreen or maximize a [floating window](./Floating-Windows.md), it'll move into the scrolling layout.
-Then, unfullscreening/unmaximizing will bring it back into the floating layout automatically.
+Fullscreen or maximized-to-edges windows normally live in the scrolling
+layout. So if you try to fullscreen or maximize a
+[floating window](./Floating-Windows.md), it'll move into the scrolling
+layout. Then, unfullscreening/unmaximizing will bring it back into the
+floating layout automatically.
+
+The [`fullscreen-keep-floating true`](./Configuration:-Window-Rules.md#fullscreen-keep-floating)
+window rule provides an opt-in exception for transient shell-owned windows:
+they retain their floating placement while fullscreen and do not rearrange
+the scrolling layout.
 
 Thanks to scrollable tiling, fullscreen and maximized windows remain a normal participant of the layout: you can scroll left and right from them and see other windows.
 

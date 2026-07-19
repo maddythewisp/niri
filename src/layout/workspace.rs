@@ -485,7 +485,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn is_active_pending_fullscreen(&self) -> bool {
-        self.scrolling.is_active_pending_fullscreen()
+        if self.floating_is_active.get() {
+            self.floating.is_active_pending_fullscreen()
+        } else {
+            self.scrolling.is_active_pending_fullscreen()
+        }
     }
 
     pub fn set_output(&mut self, output: Option<Output>) {
@@ -1258,6 +1262,21 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
         let mut restore_to_floating = false;
         if self.floating.has_window(window) {
+            let keep_floating = self
+                .floating
+                .tiles()
+                .find(|tile| tile.window().id() == window)
+                .is_some_and(|tile| tile.window().rules().fullscreen_keep_floating == Some(true))
+                || self
+                    .floating
+                    .keeps_window_floating_during_fullscreen(window);
+            if keep_floating {
+                if self.floating.set_fullscreen(window, is_fullscreen) {
+                    self.floating_is_active = FloatingActive::Yes;
+                }
+                return;
+            }
+
             if is_fullscreen {
                 restore_to_floating = true;
                 self.toggle_window_floating(Some(window));
@@ -1676,7 +1695,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn render_above_top_layer(&self) -> bool {
-        self.scrolling.render_above_top_layer()
+        if self.floating_is_active.get() {
+            self.floating.is_active_fullscreen()
+        } else {
+            self.scrolling.render_above_top_layer()
+        }
     }
 
     pub fn is_floating_visible(&self) -> bool {
