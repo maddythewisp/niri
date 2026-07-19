@@ -56,6 +56,7 @@ use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder, DmabufGlob
 use smithay::wayland::drm_lease::{
     DrmLease, DrmLeaseBuilder, DrmLeaseRequest, DrmLeaseState, LeaseRejected,
 };
+use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
@@ -870,6 +871,19 @@ impl Tty {
                 );
             assert!(self.dmabuf_global.replace(dmabuf_global).is_none());
 
+            let import_device = drm.device_fd().clone();
+            if supports_syncobj_eventfd(&import_device) {
+                let syncobj_state =
+                    DrmSyncobjState::new::<State>(&niri.display_handle, import_device);
+                assert!(niri.drm_syncobj_state.replace(syncobj_state).is_none());
+                info!("advertising linux-drm-syncobj-v1 explicit synchronization");
+            } else {
+                warn!(
+                    "primary GPU does not support DRM syncobj eventfd; explicit synchronization \
+                     will not be advertised"
+                );
+            }
+
             // Update the dmabuf feedbacks for all surfaces.
             for (node, device) in self.devices.iter_mut() {
                 for surface in device.surfaces.values_mut() {
@@ -1175,6 +1189,23 @@ impl Tty {
 
             if was_last && render_node == self.primary_render_node {
                 debug!("destroying the primary renderer");
+
+                if let Some(syncobj_state) = niri.drm_syncobj_state.take() {
+                    let global = syncobj_state.into_global();
+                    niri.display_handle.disable_global::<State>(global.clone());
+                    niri.event_loop
+                        .insert_source(
+                            Timer::from_duration(Duration::from_secs(10)),
+                            move |_, _, state| {
+                                state
+                                    .niri
+                                    .display_handle
+                                    .remove_global::<State>(global.clone());
+                                TimeoutAction::Drop
+                            },
+                        )
+                        .unwrap();
+                }
 
                 match self.gpu_manager.single_renderer(&self.primary_render_node) {
                     Ok(mut renderer) => renderer.unbind_wl_display(),
