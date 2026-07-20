@@ -58,6 +58,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+const fn default_true() -> bool {
+    true
+}
+
 pub mod socket;
 pub mod state;
 
@@ -859,6 +863,17 @@ pub enum Action {
             arg(short, long, default_value = "+0", allow_hyphen_values = true)
         )]
         y: PositionChange,
+
+        /// Whether to animate the move.
+        ///
+        /// Disable this for hidden setup where the exact target position must
+        /// be established before a later visible transition begins.
+        #[serde(default = "default_true")]
+        #[cfg_attr(
+            feature = "clap",
+            arg(long, action = clap::ArgAction::Set, default_value_t = true)
+        )]
+        animate: bool,
     },
     /// Toggle the opacity of a window.
     #[cfg_attr(

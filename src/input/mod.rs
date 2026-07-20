@@ -2210,7 +2210,7 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
-            Action::MoveFloatingWindowById { id, x, y } => {
+            Action::MoveFloatingWindowById { id, x, y, animate } => {
                 let window = if let Some(id) = id {
                     let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
                     let window = window.map(|(_, m)| m.window.clone());
@@ -2224,7 +2224,7 @@ impl State {
 
                 self.niri
                     .layout
-                    .move_floating_window(window.as_ref(), x, y, true);
+                    .move_floating_window(window.as_ref(), x, y, animate);
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }

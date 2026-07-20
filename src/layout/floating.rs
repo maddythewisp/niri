@@ -216,6 +216,21 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
+    fn render_position(tile: &Tile<W>, data: &Data) -> Point<f64, Logical> {
+        if !data.keep_floating_fullscreen {
+            return data.logical_pos;
+        }
+
+        // Keep the floating-to-fullscreen translation on the exact animation
+        // clock that resizes the tile. Starting an independent move animation
+        // when the fullscreen request is sent races ahead of the resize, which
+        // cannot begin until the client commits its new buffer. That makes
+        // off-center windows visibly leave and return to the wrong rectangle.
+        let windowed = data.logical_pos;
+        let progress = tile.fullscreen_progress();
+        Point::from((windowed.x * (1. - progress), windowed.y * (1. - progress)))
+    }
+
     pub fn new(
         view_size: Size<f64, Logical>,
         working_area: Rectangle<f64, Logical>,
@@ -269,8 +284,16 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     pub fn advance_animations(&mut self) {
-        for tile in &mut self.tiles {
+        for (tile, data) in zip(&mut self.tiles, &mut self.data) {
             tile.advance_animations();
+            if data.keep_floating_fullscreen
+                && tile.sizing_mode().is_normal()
+                && tile.window().pending_sizing_mode().is_normal()
+                && tile.resize_animation().is_none()
+            {
+                data.keep_floating_fullscreen = false;
+                data.update(tile);
+            }
         }
 
         self.closing_windows.retain_mut(|closing| {
@@ -292,7 +315,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         for (tile, data) in zip(&mut self.tiles, &self.data) {
             let id = tile.window().id();
             let is_active = is_active && Some(id) == active.as_ref();
-            let offset = Self::target_position(tile, data);
+            let offset = Self::render_position(tile, data);
 
             let mut tile_view_rect = view_rect;
             tile_view_rect.loc -= offset + tile.render_offset();
@@ -325,7 +348,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
         zip(&self.tiles, &self.data).map(move |(tile, data)| {
-            let offset = Self::target_position(tile, data);
+            let offset = Self::render_position(tile, data);
             let pos = offset + tile.render_offset();
             // Round to physical pixels.
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
@@ -339,7 +362,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     ) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> {
         let scale = self.scale;
         zip(&mut self.tiles, &self.data).map(move |(tile, data)| {
-            let offset = Self::target_position(tile, data);
+            let offset = Self::render_position(tile, data);
             let mut pos = offset + tile.render_offset();
             // Round to physical pixels.
             if round {
@@ -667,8 +690,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         self.activate_window(id);
         let idx = self.idx_of(id).unwrap();
-        let old_pos = Self::target_position(&self.tiles[idx], &self.data[idx]);
-
         if is_fullscreen {
             self.data[idx].keep_floating_fullscreen = true;
         }
@@ -688,8 +709,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
             win.request_size(size, SizingMode::Normal, true, None);
         }
 
-        let new_pos = Self::target_position(&self.tiles[idx], &self.data[idx]);
-        self.tiles[idx].animate_move_from(old_pos - new_pos);
         true
     }
 
@@ -1149,12 +1168,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let prev_size = data.size;
 
         tile.update_window();
-        if data.keep_floating_fullscreen
-            && tile.sizing_mode().is_normal()
-            && tile.window().pending_sizing_mode().is_normal()
-        {
-            data.keep_floating_fullscreen = false;
-        }
         if !data.keep_floating_fullscreen {
             data.update(tile);
         }
@@ -1477,10 +1490,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
             data.verify_invariants();
 
-            let mut data2 = *data;
-            data2.update(tile);
-            data2.update_config(self.working_area);
-            assert_eq!(data, &data2, "tile data must be up to date");
+            if !data.keep_floating_fullscreen {
+                let mut data2 = *data;
+                data2.update(tile);
+                data2.update_config(self.working_area);
+                assert_eq!(data, &data2, "tile data must be up to date");
+            }
 
             for tile_below in &self.tiles[i + 1..] {
                 assert!(

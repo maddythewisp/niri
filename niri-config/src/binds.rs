@@ -351,6 +351,7 @@ pub enum Action {
         id: Option<u64>,
         x: PositionChange,
         y: PositionChange,
+        animate: bool,
     },
     ToggleWindowRuleOpacity,
     #[knuffel(skip)]
@@ -681,8 +682,8 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::SwitchFocusBetweenFloatingAndTiling {} => {
                 Self::SwitchFocusBetweenFloatingAndTiling
             }
-            niri_ipc::Action::MoveFloatingWindow { id, x, y } => {
-                Self::MoveFloatingWindowById { id, x, y }
+            niri_ipc::Action::MoveFloatingWindow { id, x, y, animate } => {
+                Self::MoveFloatingWindowById { id, x, y, animate }
             }
             niri_ipc::Action::ToggleWindowRuleOpacity { id: None } => Self::ToggleWindowRuleOpacity,
             niri_ipc::Action::ToggleWindowRuleOpacity { id: Some(id) } => {
