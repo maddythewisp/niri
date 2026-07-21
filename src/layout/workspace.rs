@@ -1767,9 +1767,16 @@ impl<W: LayoutElement> Workspace<W> {
         tile_size: Size<f64, Logical>,
         tile_pos: Point<f64, Logical>,
         blocker: TransactionBlocker,
+        use_shell_reveal: bool,
     ) {
-        self.floating
-            .start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+        self.floating.start_close_animation_for_tile(
+            renderer,
+            snapshot,
+            tile_size,
+            tile_pos,
+            blocker,
+            use_shell_reveal,
+        );
     }
 
     pub fn start_open_animation(&mut self, id: &W::Id) -> bool {

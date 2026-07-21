@@ -22,6 +22,10 @@ pub struct OpenAnimation {
     anim: Animation,
     random_seed: f32,
     buffer: OffscreenBuffer,
+    // Trusted shell-owned surfaces (Panel::usesToplevelPresentation() on the noctalia side) get
+    // the compositor-native shell reveal instead of whatever ProgramType::Open otherwise
+    // resolves to (a user's global custom-shader, or the built-in scale/fade default).
+    use_shell_reveal: bool,
 }
 
 niri_render_elements! {
@@ -32,11 +36,12 @@ niri_render_elements! {
 }
 
 impl OpenAnimation {
-    pub fn new(anim: Animation) -> Self {
+    pub fn new(anim: Animation, use_shell_reveal: bool) -> Self {
         Self {
             anim,
             random_seed: fastrand::f32(),
             buffer: OffscreenBuffer::default(),
+            use_shell_reveal,
         }
     }
 
@@ -63,7 +68,13 @@ impl OpenAnimation {
             .render(renderer, scale, elements)
             .context("error rendering to offscreen buffer")?;
 
-        if Shaders::get(renderer).program(ProgramType::Open).is_some() {
+        let program_type = if self.use_shell_reveal {
+            ProgramType::ShellRevealOpen
+        } else {
+            ProgramType::Open
+        };
+
+        if Shaders::get(renderer).program(program_type).is_some() {
             // OffscreenBuffer renders with Transform::Normal and the scale that we passed, so we
             // can assume that below.
             let offset = elem.offset();
@@ -98,7 +109,7 @@ impl OpenAnimation {
                 Mat3::from_translation(-tex_loc / tex_size) * Mat3::from_scale(geo_size / tex_size);
 
             let elem = ShaderRenderElement::new(
-                ProgramType::Open,
+                program_type,
                 area.size,
                 None,
                 scale.x as f32,

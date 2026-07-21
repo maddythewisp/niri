@@ -1,7 +1,7 @@
 use niri_config::utils::MergeWith as _;
 use niri_config::{Config, LayerRule};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::{Element, Kind};
 use smithay::desktop::{LayerSurface, PopupKind, PopupManager};
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use smithay::wayland::compositor::{remove_pre_commit_hook, HookId};
@@ -9,16 +9,19 @@ use smithay::wayland::shell::wlr_layer::{ExclusiveZone, Layer};
 
 use super::ResolvedLayerRules;
 use crate::animation::Clock;
+use crate::handlers::background_effect::get_cached_blur_region;
 use crate::layout::shadow::Shadow;
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
-use crate::render_helpers::surface::push_elements_from_surface_tree;
+use crate::render_helpers::surface::{
+    push_elements_from_surface_tree, push_elements_from_surface_tree_with,
+};
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::{background_effect, RenderCtx};
-use crate::utils::{baba_is_float_offset, round_logical_in_physical};
+use crate::utils::{baba_is_float_offset, round_logical_in_physical, surface_geo};
 
 #[derive(Debug)]
 pub struct MappedLayer {
@@ -218,14 +221,56 @@ impl MappedLayer {
             // Layer surfaces don't have extra geometry like windows.
             let buf_pos = location;
 
-            push_elements_from_surface_tree(
+            let target = ctx.target;
+            let xray = ctx.xray;
+            let popup_rules = self.rules.popups;
+            push_elements_from_surface_tree_with(
                 ctx.renderer,
                 surface,
                 buf_pos.to_physical_precise_round(scale),
                 scale,
                 alpha,
                 Kind::ScanoutCandidate,
-                &mut |elem| push(elem.into()),
+                &mut |renderer, child_surface, states, elem| {
+                    let geometry = elem.geometry(scale).to_f64().to_logical(scale);
+                    push(elem.into());
+
+                    if child_surface == surface {
+                        return;
+                    }
+                    let Some(child_geo) = surface_geo(states) else {
+                        return;
+                    };
+                    if !get_cached_blur_region(states).is_some_and(|region| !region.is_empty()) {
+                        return;
+                    }
+
+                    let mut effect = popup_rules.background_effect;
+                    if effect.xray.is_none() {
+                        effect.xray = Some(false);
+                    }
+                    let mut child_ctx = RenderCtx {
+                        renderer,
+                        target,
+                        xray,
+                    };
+                    background_effect::render_for_tile(
+                        child_ctx.as_gles(),
+                        ns,
+                        geometry,
+                        self.scale,
+                        true,
+                        child_surface,
+                        child_geo.loc.upscale(-1).to_f64(),
+                        Scale::from(1.),
+                        self.blur_config,
+                        popup_rules.geometry_corner_radius.unwrap_or_default(),
+                        effect,
+                        false,
+                        xray_pos.offset(geometry.loc - location),
+                        &mut |elem| push(elem.into()),
+                    );
+                },
             );
         }
 

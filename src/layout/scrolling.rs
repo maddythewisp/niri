@@ -1529,8 +1529,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         let scale = Scale::from(self.scale);
+        // Tiled/scrolling windows are never shell-owned surfaces (those always request
+        // open-floating via the shell_surface bundle), so this is always false here.
         let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim, false,
         );
         match res {
             Ok(closing) => {

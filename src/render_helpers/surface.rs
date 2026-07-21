@@ -5,7 +5,7 @@ use smithay::backend::renderer::utils::{import_surface, RendererSurfaceStateUser
 use smithay::backend::renderer::{ImportAll, Renderer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Physical, Point, Scale};
-use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+use smithay::wayland::compositor::{with_surface_tree_downward, SurfaceData, TraversalAction};
 
 use super::texture::TextureBuffer;
 use super::BakedBuffer;
@@ -94,6 +94,34 @@ pub fn push_elements_from_surface_tree<R>(
     R: Renderer + ImportAll,
     R::TextureId: Clone + 'static,
 {
+    push_elements_from_surface_tree_with(
+        renderer,
+        surface,
+        location,
+        scale,
+        alpha,
+        kind,
+        &mut |_, _, _, elem| push(elem),
+    );
+}
+
+/// Renders elements from a surface tree while exposing each mapped surface to
+/// the caller. This allows protocol state that belongs immediately behind a
+/// particular subsurface, such as ext-background-effect, to be inserted at the
+/// same point in the front-to-back element list as that surface.
+pub fn push_elements_from_surface_tree_with<R>(
+    renderer: &mut R,
+    surface: &WlSurface,
+    // Fractional scale expects surface buffers to be aligned to physical pixels.
+    location: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+    kind: Kind,
+    push: &mut dyn FnMut(&mut R, &WlSurface, &SurfaceData, WaylandSurfaceRenderElement<R>),
+) where
+    R: Renderer + ImportAll,
+    R::TextureId: Clone + 'static,
+{
     let _span = tracy_client::span!("push_elements_from_surface_tree");
 
     let location = location.to_f64();
@@ -132,7 +160,7 @@ pub fn push_elements_from_surface_tree<R>(
                     match WaylandSurfaceRenderElement::from_surface(
                         renderer, surface, states, location, alpha, kind,
                     ) {
-                        Ok(Some(surface)) => push(surface),
+                        Ok(Some(elem)) => push(renderer, surface, states, elem),
                         Ok(None) => {} // surface is not mapped
                         Err(err) => {
                             warn!("failed to import surface: {}", err);

@@ -99,6 +99,13 @@ struct Data {
     /// Keep this set through the unfullscreen configure so the saved floating
     /// geometry is not replaced with the output-sized geometry.
     keep_floating_fullscreen: bool,
+
+    /// This tile is pinned to the top of the floating stack.
+    ///
+    /// Pinned tiles always occupy a contiguous prefix of `FloatingSpace::tiles`
+    /// (index 0 = topmost). Activating a non-pinned tile must never raise it
+    /// above this prefix; see `FloatingSpace::activate_window`.
+    pinned: bool,
 }
 
 impl Data {
@@ -113,6 +120,7 @@ impl Data {
             size: Size::default(),
             working_area,
             keep_floating_fullscreen: false,
+            pinned: false,
         };
         rv.update(tile);
         rv.set_logical_pos(logical_pos);
@@ -630,13 +638,22 @@ impl<W: LayoutElement> FloatingSpace<W> {
             .find(|(tile, _)| tile.window().id() == id)
             .unwrap();
 
+        let use_shell_reveal = tile.window().rules().shell_surface == Some(true);
+
         let Some(snapshot) = tile.take_unmap_snapshot() else {
             return;
         };
 
         let tile_size = tile.tile_size();
 
-        self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+        self.start_close_animation_for_tile(
+            renderer,
+            snapshot,
+            tile_size,
+            tile_pos,
+            blocker,
+            use_shell_reveal,
+        );
     }
 
     pub fn activate_window_without_raising(&mut self, id: &W::Id) -> bool {
@@ -653,9 +670,18 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        self.raise_window(idx, 0);
+        // A pinned tile may raise to the very top (among other pinned tiles); a non-pinned
+        // tile must never be raised above the pinned prefix. With no pinned tiles this clamp
+        // is a no-op and behavior is unchanged from before pinning existed.
+        let dest = if self.data[idx].pinned {
+            0
+        } else {
+            self.pinned_count().min(idx)
+        };
+
+        self.raise_window(idx, dest);
         self.active_window_id = Some(id.clone());
-        self.bring_up_descendants_of(0);
+        self.bring_up_descendants_of(dest);
 
         true
     }
@@ -721,6 +747,52 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.data.insert(to_idx, data);
     }
 
+    /// Moves a tile to an arbitrary index, unlike `raise_window` which only ever moves a tile
+    /// toward the front. Used to maintain the pinned-tiles-form-a-prefix invariant.
+    fn move_tile_to(&mut self, from_idx: usize, to_idx: usize) {
+        if from_idx == to_idx {
+            return;
+        }
+
+        let tile = self.tiles.remove(from_idx);
+        let data = self.data.remove(from_idx);
+        let insert_idx = if to_idx > from_idx { to_idx - 1 } else { to_idx };
+        self.tiles.insert(insert_idx, tile);
+        self.data.insert(insert_idx, data);
+    }
+
+    /// Number of tiles currently pinned to the top of the stack.
+    pub fn pinned_count(&self) -> usize {
+        self.data.iter().filter(|data| data.pinned).count()
+    }
+
+    pub fn is_pinned(&self, id: &W::Id) -> bool {
+        self.idx_of(id).is_some_and(|idx| self.data[idx].pinned)
+    }
+
+    /// Pins or unpins a tile to the top of the floating stack.
+    ///
+    /// Pinned tiles always occupy a contiguous prefix of the stack (index 0 = topmost) and are
+    /// never displaced by `activate_window` raising a non-pinned tile. A newly pinned tile
+    /// becomes the topmost pinned tile; a newly unpinned tile becomes the topmost non-pinned
+    /// tile, i.e. it stays visually where it was relative to the remaining pinned tiles.
+    pub fn set_pinned(&mut self, id: &W::Id, pinned: bool) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        if self.data[idx].pinned == pinned {
+            return;
+        }
+
+        self.data[idx].pinned = pinned;
+        if pinned {
+            self.move_tile_to(idx, 0);
+        } else {
+            let prefix = self.pinned_count();
+            self.move_tile_to(idx, prefix);
+        }
+    }
+
     pub fn start_close_animation_for_tile(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -728,6 +800,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         tile_size: Size<f64, Logical>,
         tile_pos: Point<f64, Logical>,
         blocker: TransactionBlocker,
+        use_shell_reveal: bool,
     ) {
         let anim = Animation::new(
             self.clock.clone(),
@@ -745,7 +818,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let scale = Scale::from(self.scale);
         let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+            renderer,
+            snapshot,
+            scale,
+            tile_size,
+            tile_pos,
+            blocker,
+            anim,
+            use_shell_reveal,
         );
         match res {
             Ok(closing) => {
@@ -814,7 +894,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
-        self.tiles[idx].start_open_animation();
+        if self.tiles[idx].window().rules().open_animation != Some(false) {
+            self.tiles[idx].start_open_animation();
+        }
         true
     }
 
@@ -1155,6 +1237,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             return false;
         };
 
+        // Keep the pinned-prefix invariant in sync with the (possibly just-changed) resolved
+        // window rule. Computed from an immutable borrow before the mutable ones below, and
+        // applied via set_pinned() after they end, since set_pinned() needs &mut self itself.
+        let desired_pinned = self.tiles[tile_idx].window().rules().always_on_top == Some(true);
+
         let tile = &mut self.tiles[tile_idx];
         let data = &mut self.data[tile_idx];
 
@@ -1183,6 +1270,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
             }
             data.set_logical_pos(data.logical_pos + offset);
         }
+
+        self.set_pinned(id, desired_pinned);
 
         true
     }
@@ -1541,5 +1630,128 @@ fn resolve_preset_size(preset: PresetSize, view_size: f64) -> ResolvedSize {
     match preset {
         PresetSize::Proportion(proportion) => ResolvedSize::Tile(view_size * proportion),
         PresetSize::Fixed(width) => ResolvedSize::Window(f64::from(width)),
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::layout::tests::{TestWindow, TestWindowParams};
+
+    fn make_space() -> FloatingSpace<TestWindow> {
+        let view_size = Size::from((1280., 720.));
+        let working_area = Rectangle::from_size(view_size);
+        FloatingSpace::new(
+            view_size,
+            working_area,
+            1.,
+            Clock::with_time(Duration::ZERO),
+            Rc::new(Options::default()),
+        )
+    }
+
+    fn add_window(space: &mut FloatingSpace<TestWindow>, id: usize) {
+        let window = TestWindow::new(TestWindowParams::new(id));
+        let tile = Tile::new(
+            window,
+            space.view_size,
+            space.scale,
+            space.clock.clone(),
+            space.options.clone(),
+        );
+        space.add_tile(tile, true);
+    }
+
+    fn order(space: &FloatingSpace<TestWindow>) -> Vec<usize> {
+        space.tiles.iter().map(|t| *t.window().id()).collect()
+    }
+
+    #[test]
+    fn no_pins_matches_pre_pin_behavior() {
+        // Regression guard: with no pinned windows, activate_window must still simply raise
+        // the target straight to the front, exactly as before pinning existed.
+        let mut space = make_space();
+        add_window(&mut space, 1);
+        add_window(&mut space, 2);
+        add_window(&mut space, 3);
+        // Topmost-first insertion order: [3, 2, 1].
+        assert_eq!(order(&space), vec![3, 2, 1]);
+
+        space.activate_window(&1);
+        assert_eq!(order(&space), vec![1, 3, 2]);
+
+        space.activate_window(&2);
+        assert_eq!(order(&space), vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn pinned_window_stays_on_top_of_activated_siblings() {
+        let mut space = make_space();
+        add_window(&mut space, 1);
+        add_window(&mut space, 2);
+        add_window(&mut space, 3);
+        // [3, 2, 1]
+
+        space.set_pinned(&2, true);
+        assert!(space.is_pinned(&2));
+        assert_eq!(space.pinned_count(), 1);
+        // Newly pinned tile becomes topmost.
+        assert_eq!(order(&space), vec![2, 3, 1]);
+
+        // Activating a non-pinned window must never cross the pinned prefix.
+        space.activate_window(&1);
+        assert_eq!(order(&space), vec![2, 1, 3]);
+        assert_eq!(space.tiles[0].window().id(), &2);
+
+        space.activate_window(&3);
+        assert_eq!(order(&space), vec![2, 3, 1]);
+        assert_eq!(space.tiles[0].window().id(), &2);
+    }
+
+    #[test]
+    fn multiple_pinned_windows_keep_relative_mru_order() {
+        let mut space = make_space();
+        add_window(&mut space, 1);
+        add_window(&mut space, 2);
+        add_window(&mut space, 3);
+        // [3, 2, 1]
+
+        space.set_pinned(&1, true);
+        space.set_pinned(&3, true);
+        assert_eq!(space.pinned_count(), 2);
+        // Both pinned tiles precede the sole non-pinned tile (2); activating a pinned tile
+        // still reorders within the pinned prefix normally.
+        assert_eq!(order(&space)[2], 2);
+
+        space.activate_window(&1);
+        assert_eq!(order(&space), vec![1, 3, 2]);
+
+        // Non-pinned activation still can't cross into the pinned prefix.
+        space.activate_window(&2);
+        assert_eq!(order(&space), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn unpinning_drops_to_top_of_non_pinned_tiles() {
+        let mut space = make_space();
+        add_window(&mut space, 1);
+        add_window(&mut space, 2);
+        add_window(&mut space, 3);
+        // [3, 2, 1]
+
+        space.set_pinned(&2, true);
+        assert_eq!(order(&space), vec![2, 3, 1]);
+
+        space.set_pinned(&2, false);
+        assert!(!space.is_pinned(&2));
+        assert_eq!(space.pinned_count(), 0);
+        // Unpinned tile lands at the top of the (now fully non-pinned) stack.
+        assert_eq!(order(&space), vec![2, 3, 1]);
+
+        // And normal raise behavior is fully restored.
+        space.activate_window(&1);
+        assert_eq!(order(&space), vec![1, 2, 3]);
     }
 }

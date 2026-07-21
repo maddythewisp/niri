@@ -4765,6 +4765,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
+                let use_shell_reveal = move_.tile.window().rules().shell_surface == Some(true);
                 let Some(snapshot) = move_.tile.take_unmap_snapshot() else {
                     return;
                 };
@@ -4787,7 +4788,14 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
 
                 let tile_pos = tile_pos - ws_geo.loc;
-                ws.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
+                ws.start_close_animation_for_tile(
+                    renderer,
+                    snapshot,
+                    tile_size,
+                    tile_pos,
+                    blocker,
+                    use_shell_reveal,
+                );
                 return;
             }
         }

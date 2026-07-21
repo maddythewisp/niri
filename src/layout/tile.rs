@@ -559,13 +559,17 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn start_open_animation(&mut self) {
-        self.open_animation = Some(OpenAnimation::new(Animation::new(
-            self.clock.clone(),
-            0.,
-            1.,
-            0.,
-            self.options.animations.window_open.anim,
-        )));
+        let use_shell_reveal = self.window.rules().shell_surface == Some(true);
+        self.open_animation = Some(OpenAnimation::new(
+            Animation::new(
+                self.clock.clone(),
+                0.,
+                1.,
+                0.,
+                self.options.animations.window_open.anim,
+            ),
+            use_shell_reveal,
+        ));
     }
 
     pub fn resize_animation(&self) -> Option<&Animation> {
@@ -1219,12 +1223,11 @@ impl<W: LayoutElement> Tile<W> {
                     // Otherwise, render the solid color as is.
                     LayoutElementRenderElement::SolidColor(elem).into()
                 }
-                elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
-                    // This is only used on popups for now. If subsurface blur is implemented, this
-                    // will need to be handled somehow.
-                    error!("background effect clipping is unimplemented");
-                    elem.into()
-                }
+                // Subsurface effects are constructed with the requesting
+                // surface's exact geometry, blur subregion, and clip before
+                // they enter the tile element list. They must remain directly
+                // behind that surface, so no second tile-level clip is needed.
+                elem @ LayoutElementRenderElement::BackgroundEffect(_) => elem.into(),
             };
 
             if clip_to_geometry && clip_shader.is_some() {

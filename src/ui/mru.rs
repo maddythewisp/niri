@@ -420,12 +420,10 @@ impl Thumbnail {
                 // Otherwise, render the solid color as is.
                 LayoutElementRenderElement::SolidColor(elem).into()
             }
-            elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
-                // This is only used on popups for now. If subsurface blur is implemented, this
-                // will need to be handled somehow.
-                error!("background effect clipping is unimplemented");
-                elem.into()
-            }
+            // The effect already carries the requesting surface's geometry
+            // and clip. It is rescaled together with the rest of the thumbnail
+            // below, preserving its position immediately behind that surface.
+            elem @ LayoutElementRenderElement::BackgroundEffect(_) => elem.into(),
         };
 
         let downscale = move |elem| {
@@ -587,6 +585,10 @@ impl WindowMru {
             let on_current_workspace = on_current_output && mon.active_workspace_idx() == ws_idx;
 
             for mapped in ws.windows() {
+                if mapped.rules().skip_window_switcher == Some(true) {
+                    continue;
+                }
+
                 let mut thumbnail = Thumbnail::from_mapped(mapped, niri.clock.clone(), config);
                 thumbnail.on_current_output = on_current_output;
                 thumbnail.on_current_workspace = on_current_workspace;

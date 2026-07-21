@@ -131,11 +131,26 @@ pub struct ResolvedWindowRules {
     /// Whether to animate this window after it closes.
     pub close_animation: Option<bool>,
 
+    /// Whether to animate this window when it opens.
+    pub open_animation: Option<bool>,
+
     /// Background effect configuration.
     pub background_effect: BackgroundEffect,
 
     /// Rules for this window's popups.
     pub popups: ResolvedPopupsRules,
+
+    /// Whether to keep this floating window above all non-pinned floating windows.
+    pub always_on_top: Option<bool>,
+
+    /// Whether this is a trusted shell-owned surface (implies open-floating,
+    /// fullscreen-keep-floating, always-on-top, and disables the compositor's generic
+    /// open/close animations in favor of the shell's own bespoke reveal — see
+    /// `open_animation`/`close_animation` above and `ProgramType::ShellReveal{Open,Close}`).
+    pub shell_surface: Option<bool>,
+
+    /// Whether to exclude this window from the recent-windows (Mru) switcher.
+    pub skip_window_switcher: Option<bool>,
 }
 
 impl<'a> WindowRef<'a> {
@@ -222,6 +237,29 @@ impl ResolvedWindowRules {
 
                 if rule.excludes.iter().any(matches) {
                     continue;
+                }
+
+                // Apply the shell-surface bundle's implied defaults first, so that any of these
+                // same properties set explicitly further down in this same rule (processed next)
+                // naturally override the bundle rather than fight with it.
+                if rule.shell_surface == Some(true) {
+                    resolved.open_floating = Some(true);
+                    resolved.fullscreen_keep_floating = Some(true);
+                    resolved.always_on_top = Some(true);
+                    resolved.shell_surface = Some(true);
+                    // A shell-owned surface plays the compositor's bespoke shell-reveal
+                    // open/close transition instead of the generic one — see
+                    // ProgramType::ShellRevealOpen/Close in render_helpers/shaders. Disabling
+                    // the generic animations here isn't strictly needed once the reveal-vs-generic
+                    // selection is itself based on `shell_surface`, but keeps both properties
+                    // independently meaningful/overridable.
+                    resolved.open_animation = Some(false);
+                    resolved.close_animation = Some(false);
+                    // A window the shell deliberately turned into a real toplevel had, under the
+                    // layer-shell surface it used to be, no switcher/overview presence at all —
+                    // that was a free side effect of the protocol, not a deliberate choice. Keep
+                    // that behavior for the switcher now that it isn't free anymore.
+                    resolved.skip_window_switcher = Some(true);
                 }
 
                 if let Some(x) = rule.default_column_width {
@@ -321,6 +359,18 @@ impl ResolvedWindowRules {
                 }
                 if let Some(x) = rule.close_animation {
                     resolved.close_animation = Some(x);
+                }
+                if let Some(x) = rule.open_animation {
+                    resolved.open_animation = Some(x);
+                }
+                if let Some(x) = rule.always_on_top {
+                    resolved.always_on_top = Some(x);
+                }
+                if let Some(x) = rule.shell_surface {
+                    resolved.shell_surface = Some(x);
+                }
+                if let Some(x) = rule.skip_window_switcher {
+                    resolved.skip_window_switcher = Some(x);
                 }
 
                 resolved

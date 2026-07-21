@@ -2,8 +2,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::time::Duration;
 
 use niri_config::{Color, Config, CornerRadius, GradientInterpolation, WindowRule};
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::space::SpaceElement as _;
 use smithay::desktop::{PopupKind, PopupManager, Window};
@@ -22,6 +21,7 @@ use smithay::wayland::shell::xdg::{
 use wayland_backend::server::Credentials;
 
 use super::{ResolvedWindowRules, WindowRef};
+use crate::handlers::background_effect::get_cached_blur_region;
 use crate::handlers::KdeDecorationsModeState;
 use crate::layout::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
@@ -35,14 +35,15 @@ use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::surface::{
-    push_elements_from_surface_tree, render_snapshot_from_surface_tree,
+    push_elements_from_surface_tree, push_elements_from_surface_tree_with,
+    render_snapshot_from_surface_tree,
 };
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::{background_effect, BakedBuffer, RenderCtx, RenderTarget};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 use crate::utils::{
-    get_credentials_for_surface, send_scale_transform, update_tiled_state,
+    get_credentials_for_surface, send_scale_transform, surface_geo, update_tiled_state,
     with_toplevel_last_uncommitted_configure, with_toplevel_role, with_toplevel_role_and_current,
     ResizeEdge,
 };
@@ -660,15 +661,60 @@ impl LayoutElement for Mapped {
         } else {
             let buf_pos = location - self.window.geometry().loc.to_f64();
             let surface = self.toplevel().wl_surface();
-            let mut push = |elem: WaylandSurfaceRenderElement<R>| push(elem.into());
-            push_elements_from_surface_tree(
+            let target = ctx.target;
+            let xray = ctx.xray;
+            let popup_rules = self.rules.popups;
+            push_elements_from_surface_tree_with(
                 ctx.renderer,
                 surface,
                 buf_pos.to_physical_precise_round(scale),
                 scale,
                 alpha,
                 Kind::ScanoutCandidate,
-                &mut push,
+                &mut |renderer, child_surface, states, elem| {
+                    let geometry = elem.geometry(scale).to_f64().to_logical(scale);
+                    push(elem.into());
+
+                    // The toplevel's own effect is rendered separately using
+                    // window rules. Child surfaces are popup-like surfaces and
+                    // use popup rules, but only become visible here when they
+                    // explicitly request an effect through the protocol.
+                    if child_surface == surface {
+                        return;
+                    }
+                    let Some(child_geo) = surface_geo(states) else {
+                        return;
+                    };
+                    if !get_cached_blur_region(states).is_some_and(|region| !region.is_empty()) {
+                        return;
+                    }
+
+                    let mut effect = popup_rules.background_effect;
+                    if effect.xray.is_none() {
+                        effect.xray = Some(false);
+                    }
+                    let mut child_ctx = RenderCtx {
+                        renderer,
+                        target,
+                        xray,
+                    };
+                    background_effect::render_for_tile(
+                        child_ctx.as_gles(),
+                        None,
+                        geometry,
+                        scale.x,
+                        true,
+                        child_surface,
+                        child_geo.loc.upscale(-1).to_f64(),
+                        Scale::from(1.),
+                        self.blur_config,
+                        popup_rules.geometry_corner_radius.unwrap_or_default(),
+                        effect,
+                        false,
+                        XrayPos::default(),
+                        &mut |elem| push(elem.into()),
+                    );
+                },
             )
         }
     }

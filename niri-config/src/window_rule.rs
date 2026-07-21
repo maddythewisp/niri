@@ -81,10 +81,29 @@ pub struct WindowRule {
     pub fullscreen_backdrop: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub close_animation: Option<bool>,
+    /// Whether to animate this window when it opens. Set to `false` for clients that play their
+    /// own open transition (e.g. a trusted shell-owned surface with a bespoke reveal), so the
+    /// compositor's window-open animation doesn't play at the same time and double up.
+    #[knuffel(child, unwrap(argument))]
+    pub open_animation: Option<bool>,
     #[knuffel(child, default)]
     pub background_effect: BackgroundEffectRule,
     #[knuffel(child, default)]
     pub popups: PopupsRule,
+
+    /// Keeps this floating window above all non-pinned floating windows, regardless of focus.
+    #[knuffel(child, unwrap(argument))]
+    pub always_on_top: Option<bool>,
+
+    /// Convenience bundle for trusted shell-owned surfaces: implies `open-floating`,
+    /// `fullscreen-keep-floating`, and `always-on-top`. Individual properties set explicitly on
+    /// the same rule still take precedence over the bundle.
+    #[knuffel(child, unwrap(argument))]
+    pub shell_surface: Option<bool>,
+
+    /// Excludes this window from the recent-windows (Mru) switcher.
+    #[knuffel(child, unwrap(argument))]
+    pub skip_window_switcher: Option<bool>,
 }
 
 /// Rules for popup surfaces.

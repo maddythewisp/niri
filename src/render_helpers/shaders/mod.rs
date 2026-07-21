@@ -21,6 +21,11 @@ pub struct Shaders {
     pub custom_resize: RefCell<Option<ShaderProgram>>,
     pub custom_close: RefCell<Option<ShaderProgram>>,
     pub custom_open: RefCell<Option<ShaderProgram>>,
+    // First-party, always-compiled (not user-configurable) shell-owned-surface reveal shaders —
+    // selected instead of custom_open/custom_close for windows whose resolved rules have
+    // shell_surface == Some(true). See shell_reveal_open.frag/shell_reveal_close.frag.
+    pub shell_reveal_open: Option<ShaderProgram>,
+    pub shell_reveal_close: Option<ShaderProgram>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +35,8 @@ pub enum ProgramType {
     Resize,
     Close,
     Open,
+    ShellRevealOpen,
+    ShellRevealClose,
 }
 
 impl Shaders {
@@ -148,6 +155,18 @@ impl Shaders {
             })
             .ok();
 
+        let shell_reveal_open = compile_open_program(renderer, include_str!("shell_reveal_open.frag"))
+            .map_err(|err| {
+                warn!("error compiling shell reveal open shader: {err:?}");
+            })
+            .ok();
+
+        let shell_reveal_close = compile_close_program(renderer, include_str!("shell_reveal_close.frag"))
+            .map_err(|err| {
+                warn!("error compiling shell reveal close shader: {err:?}");
+            })
+            .ok();
+
         Self {
             border,
             shadow,
@@ -159,6 +178,8 @@ impl Shaders {
             custom_resize: RefCell::new(None),
             custom_close: RefCell::new(None),
             custom_open: RefCell::new(None),
+            shell_reveal_open,
+            shell_reveal_close,
         }
     }
 
@@ -207,6 +228,8 @@ impl Shaders {
                 .or_else(|| self.resize.clone()),
             ProgramType::Close => self.custom_close.borrow().clone(),
             ProgramType::Open => self.custom_open.borrow().clone(),
+            ProgramType::ShellRevealOpen => self.shell_reveal_open.clone(),
+            ProgramType::ShellRevealClose => self.shell_reveal_close.clone(),
         }
     }
 }

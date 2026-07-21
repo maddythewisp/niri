@@ -61,6 +61,10 @@ pub struct ClosingWindow {
 
     /// Random seed for the shader.
     random_seed: f32,
+
+    /// Whether this window's resolved rules had `shell_surface == Some(true)` at close time —
+    /// picks the compositor-native shell reveal instead of ProgramType::Close.
+    use_shell_reveal: bool,
 }
 
 niri_render_elements! {
@@ -102,6 +106,7 @@ impl ClosingWindow {
         pos: Point<f64, Logical>,
         blocker: TransactionBlocker,
         anim: Animation,
+        use_shell_reveal: bool,
     ) -> anyhow::Result<Self> {
         let _span = tracy_client::span!("ClosingWindow::new");
 
@@ -154,6 +159,7 @@ impl ClosingWindow {
             blocked_out_buffer_offset,
             anim_state: AnimationState::new(blocker, anim),
             random_seed: fastrand::f32(),
+            use_shell_reveal,
         })
     }
 
@@ -223,10 +229,13 @@ impl ClosingWindow {
         let progress = anim.value();
         let clamped_progress = anim.clamped_value().clamp(0., 1.);
 
-        if Shaders::get(ctx.renderer)
-            .program(ProgramType::Close)
-            .is_some()
-        {
+        let program_type = if self.use_shell_reveal {
+            ProgramType::ShellRevealClose
+        } else {
+            ProgramType::Close
+        };
+
+        if Shaders::get(ctx.renderer).program(program_type).is_some() {
             let area_loc = Vec2::new(view_rect.loc.x as f32, view_rect.loc.y as f32);
             let area_size = Vec2::new(view_rect.size.w as f32, view_rect.size.h as f32);
 
@@ -251,7 +260,7 @@ impl ClosingWindow {
                 Mat3::from_translation(-tex_loc / tex_size) * Mat3::from_scale(geo_size / tex_size);
 
             return ShaderRenderElement::new(
-                ProgramType::Close,
+                program_type,
                 view_rect.size,
                 None,
                 scale.x as f32,

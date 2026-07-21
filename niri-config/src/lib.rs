@@ -648,6 +648,127 @@ mod tests {
         assert_eq!(config.input.keyboard.repeat_rate, 25);
     }
 
+    #[test]
+    fn window_rule_always_on_top() {
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                always-on-top true
+            }
+            "#,
+        );
+
+        assert_eq!(config.window_rules.len(), 1);
+        assert_eq!(config.window_rules[0].always_on_top, Some(true));
+        assert_eq!(config.window_rules[0].shell_surface, None);
+    }
+
+    #[test]
+    fn window_rule_shell_surface_bundle() {
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                shell-surface true
+            }
+            "#,
+        );
+
+        assert_eq!(config.window_rules[0].shell_surface, Some(true));
+        // The bundle's implied properties are resolved at ResolvedWindowRules::compute() time
+        // (see window::mod::tests in the main niri crate), not at parse time -- at the raw
+        // WindowRule level, only the flag itself is set.
+        assert_eq!(config.window_rules[0].open_floating, None);
+        assert_eq!(config.window_rules[0].fullscreen_keep_floating, None);
+        assert_eq!(config.window_rules[0].always_on_top, None);
+    }
+
+    #[test]
+    fn window_rule_shell_surface_bundle_with_explicit_override() {
+        // An explicit property on the same rule must be parsed independently of the bundle flag
+        // -- ResolvedWindowRules::compute() is what makes the explicit value win, this test only
+        // proves both parse correctly side by side.
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                shell-surface true
+                always-on-top false
+            }
+            "#,
+        );
+
+        assert_eq!(config.window_rules[0].shell_surface, Some(true));
+        assert_eq!(config.window_rules[0].always_on_top, Some(false));
+    }
+
+    #[test]
+    fn window_rule_open_animation() {
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                open-animation false
+            }
+            "#,
+        );
+
+        assert_eq!(config.window_rules[0].open_animation, Some(false));
+    }
+
+    #[test]
+    fn window_rule_shell_surface_bundle_disables_compositor_animations() {
+        // shell-surface implies both open-animation and close-animation are off, since a
+        // shell-owned surface plays its own bespoke transition and the compositor's generic
+        // window animations would otherwise run at the same time.
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                shell-surface true
+            }
+            "#,
+        );
+
+        // At the raw WindowRule level (parse time), only the bundle flag itself is set --
+        // open_animation/close_animation being implied false happens at
+        // ResolvedWindowRules::compute() time, same as the other bundled properties.
+        assert_eq!(config.window_rules[0].open_animation, None);
+        assert_eq!(config.window_rules[0].close_animation, None);
+    }
+
+    #[test]
+    fn window_rule_skip_window_switcher() {
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                skip-window-switcher true
+            }
+            "#,
+        );
+
+        assert_eq!(config.window_rules[0].skip_window_switcher, Some(true));
+    }
+
+    #[test]
+    fn window_rule_shell_surface_bundle_skips_window_switcher() {
+        let config = do_parse(
+            r#"
+            window-rule {
+                match app-id="dev.noctalia.panel-open"
+                shell-surface true
+            }
+            "#,
+        );
+
+        // Same as open_animation/close_animation: only the bundle flag itself is set at parse
+        // time, skip_window_switcher being implied true happens at
+        // ResolvedWindowRules::compute() time.
+        assert_eq!(config.window_rules[0].skip_window_switcher, None);
+    }
+
     #[track_caller]
     fn do_parse(text: &str) -> Config {
         Config::parse_mem(text)
@@ -1894,6 +2015,7 @@ mod tests {
                     close_animation: Some(
                         false,
                     ),
+                    open_animation: None,
                     background_effect: BackgroundEffectRule {
                         xray: None,
                         blur: None,
@@ -1910,6 +2032,9 @@ mod tests {
                             saturation: None,
                         },
                     },
+                    always_on_top: None,
+                    shell_surface: None,
+                    skip_window_switcher: None,
                 },
             ],
             layer_rules: [
